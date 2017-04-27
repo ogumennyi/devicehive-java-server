@@ -1,5 +1,7 @@
 package com.devicehive.auth.rest;
 
+import com.devicehive.application.security.WebSecurityConfig;
+
 /*
  * #%L
  * DeviceHive Java Server Common business logic
@@ -21,6 +23,7 @@ package com.devicehive.auth.rest;
  */
 
 import com.devicehive.auth.HiveAuthentication;
+import com.devicehive.auth.jwt.extractor.TokenExtractor;
 import com.devicehive.configuration.Constants;
 import org.apache.commons.lang3.tuple.Pair;
 import org.slf4j.Logger;
@@ -33,7 +36,9 @@ import org.springframework.security.core.AuthenticationException;
 import org.springframework.security.core.authority.AuthorityUtils;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.crypto.codec.Base64;
+import org.springframework.security.web.authentication.AbstractAuthenticationProcessingFilter;
 import org.springframework.security.web.authentication.preauth.PreAuthenticatedAuthenticationToken;
+import org.springframework.security.web.util.matcher.RequestMatcher;
 import org.springframework.web.filter.GenericFilterBean;
 import org.springframework.web.util.UrlPathHelper;
 
@@ -50,57 +55,68 @@ import java.net.UnknownHostException;
 import java.util.Optional;
 import java.util.UUID;
 
-public class HttpAuthenticationFilter extends GenericFilterBean {
+public class JwtTokenAuthenticationProcessingFilter extends AbstractAuthenticationProcessingFilter {
 
-    private static final Logger logger = LoggerFactory.getLogger(HttpAuthenticationFilter.class);
+    private static final Logger logger = LoggerFactory.getLogger(JwtTokenAuthenticationProcessingFilter.class);
 
     private AuthenticationManager authenticationManager;
+    private final TokenExtractor tokenExtractor;
 
-    public HttpAuthenticationFilter(AuthenticationManager authenticationManager) {
+    public JwtTokenAuthenticationProcessingFilter(AuthenticationManager authenticationManager, TokenExtractor tokenExtractor, RequestMatcher matcher) {
+    	super(matcher);
         this.authenticationManager = authenticationManager;
+        this.tokenExtractor = tokenExtractor;
     }
-
+    
     @Override
-    public void doFilter(ServletRequest request, ServletResponse response, FilterChain chain) throws IOException, ServletException {
-        HttpServletRequest httpRequest = (HttpServletRequest) request;
-        HttpServletResponse httpResponse = (HttpServletResponse) response;
-
-        Optional<String> authHeader = Optional.ofNullable(httpRequest.getHeader(HttpHeaders.AUTHORIZATION));
-
-        String resourcePath = new UrlPathHelper().getPathWithinApplication(httpRequest);
-        logger.debug("Security intercepted request to {}", resourcePath);
-
-        try {
-            if (authHeader.isPresent()) {
-                String header = authHeader.get();
-                if (header.startsWith(Constants.BASIC_AUTH_SCHEME)) {
-                    processBasicAuth(header);
-                } else if (header.startsWith(Constants.TOKEN_SCHEME)) {
-                    processJwtAuth(authHeader.get().substring(6).trim());
-                }
-            } else {
-                processAnonymousAuth();
-            }
-
-            Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
-            if (authentication != null && authentication instanceof AbstractAuthenticationToken) {
-                MDC.put("usrinf", authentication.getName());
-                HiveAuthentication.HiveAuthDetails details = createUserDetails(httpRequest);
-                ((AbstractAuthenticationToken) authentication).setDetails(details);
-            }
-
-            chain.doFilter(request, response);
-        } catch (InternalAuthenticationServiceException e) {
-            SecurityContextHolder.clearContext();
-            logger.error("Internal authentication service exception", e);
-            httpResponse.sendError(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
-        } catch (AuthenticationException e) {
-            SecurityContextHolder.clearContext();
-            httpResponse.sendError(HttpServletResponse.SC_UNAUTHORIZED, e.getMessage());
-        } finally {
-            MDC.remove("usrinf");
-        }
+    public Authentication attemptAuthentication(HttpServletRequest request, HttpServletResponse response)
+            throws AuthenticationException, IOException, ServletException {
+        String tokenPayload = request.getHeader(WebSecurityConfig.JWT_TOKEN_HEADER_PARAM);
+        RawAccessJwtToken token = new RawAccessJwtToken(tokenExtractor.extract(tokenPayload));
+        return getAuthenticationManager().authenticate(new JwtAuthenticationToken(token));
     }
+
+//    @Override
+//    public void doFilter(ServletRequest request, ServletResponse response, FilterChain chain) throws IOException, ServletException {
+//        HttpServletRequest httpRequest = (HttpServletRequest) request;
+//        HttpServletResponse httpResponse = (HttpServletResponse) response;
+//
+//        Optional<String> authHeader = Optional.ofNullable(httpRequest.getHeader(HttpHeaders.AUTHORIZATION));
+//
+//        String resourcePath = new UrlPathHelper().getPathWithinApplication(httpRequest);
+//        logger.debug("Security intercepted request to {}", resourcePath);
+//
+//        try {
+//            if (authHeader.isPresent()) {
+//                String header = authHeader.get();
+//                if (header.startsWith(Constants.BASIC_AUTH_SCHEME)) {
+//                    processBasicAuth(header);
+//                } else if (header.startsWith(Constants.TOKEN_SCHEME)) {
+//                    processJwtAuth(authHeader.get().substring(6).trim());
+//                }
+//            } else {
+//                processAnonymousAuth();
+//            }
+//
+//            Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+//            if (authentication != null && authentication instanceof AbstractAuthenticationToken) {
+//                MDC.put("usrinf", authentication.getName());
+//                HiveAuthentication.HiveAuthDetails details = createUserDetails(httpRequest);
+//                ((AbstractAuthenticationToken) authentication).setDetails(details);
+//            }
+//
+//            chain.doFilter(request, response);
+//        } catch (InternalAuthenticationServiceException e) {
+//            SecurityContextHolder.clearContext();
+//            logger.error("Internal authentication service exception", e);
+//            httpResponse.sendError(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
+//        } catch (AuthenticationException e) {
+//            SecurityContextHolder.clearContext();
+//            httpResponse.sendError(HttpServletResponse.SC_UNAUTHORIZED, e.getMessage());
+//        } finally {
+//            MDC.remove("usrinf");
+//        }
+//    }
 
     private HiveAuthentication.HiveAuthDetails createUserDetails(HttpServletRequest request) throws UnknownHostException {
         return new HiveAuthentication.HiveAuthDetails(

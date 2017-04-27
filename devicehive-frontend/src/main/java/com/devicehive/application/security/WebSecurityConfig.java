@@ -1,5 +1,9 @@
 package com.devicehive.application.security;
 
+import com.devicehive.application.filter.BasicAuthenticationFilter;
+import com.devicehive.auth.SkipPathRequestMatcher;
+import com.devicehive.auth.jwt.extractor.TokenExtractor;
+
 /*
  * #%L
  * DeviceHive Java Server Common business logic
@@ -20,18 +24,20 @@ package com.devicehive.application.security;
  * #L%
  */
 
-import com.devicehive.auth.rest.HttpAuthenticationFilter;
+import com.devicehive.auth.rest.JwtTokenAuthenticationProcessingFilter;
 import com.devicehive.auth.rest.SimpleCORSFilter;
 import com.devicehive.auth.rest.providers.BasicAuthenticationProvider;
 import com.devicehive.auth.rest.providers.HiveAnonymousAuthenticationProvider;
 import com.devicehive.auth.rest.providers.JwtTokenAuthenticationProvider;
-import com.devicehive.configuration.Constants;
-import com.devicehive.configuration.Messages;
 import com.devicehive.model.ErrorResponse;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Primary;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
 import org.springframework.http.HttpHeaders;
@@ -43,9 +49,12 @@ import org.springframework.security.config.annotation.web.configuration.EnableWe
 import org.springframework.security.config.annotation.web.configuration.WebSecurityConfigurerAdapter;
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.web.AuthenticationEntryPoint;
-import org.springframework.security.web.authentication.www.BasicAuthenticationFilter;
+import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 
 import javax.servlet.http.HttpServletResponse;
+
+import java.util.Arrays;
+import java.util.List;
 import java.util.Optional;
 
 @Configuration
@@ -53,25 +62,39 @@ import java.util.Optional;
 @Order(Ordered.HIGHEST_PRECEDENCE)
 public class WebSecurityConfig extends WebSecurityConfigurerAdapter {
 
+	public static final String JWT_TOKEN_HEADER_PARAM = "X-Authorization";
+	public static final String FORM_BASED_LOGIN_ENTRY_POINT = "/dh/rest/login";
+	public static final String TOKEN_BASED_AUTH_ENTRY_POINT = "/dh/**";
+    public static final String TOKEN_REFRESH_ENTRY_POINT = "/dh/rest/token";
+
+    @Autowired
+    private TokenExtractor tokenExtractor;
+    @Autowired
+    private ObjectMapper objectMapper;
+
     private Gson gson = new GsonBuilder().create();
 
     @Override
     protected void configure(HttpSecurity http) throws Exception {
         http
                 .csrf().disable()
+                .exceptionHandling()
+                .authenticationEntryPoint(unauthorizedEntryPoint())
+                .and()
+                	.anonymous().disable()
                 .sessionManagement().sessionCreationPolicy(SessionCreationPolicy.STATELESS)
                 .and()
-                .authorizeRequests()
-                .antMatchers("/css/**", "/server/**", "/scripts/**", "/webjars/**", "/templates/**").permitAll()
-                .antMatchers("/*/swagger.json", "/*/swagger.yaml").permitAll()
-                .and()
-                .anonymous().disable()
-                .exceptionHandling()
-                .authenticationEntryPoint(unauthorizedEntryPoint());
-
-        http
-                .addFilterBefore(new HttpAuthenticationFilter(authenticationManager()), BasicAuthenticationFilter.class)
-                .addFilterAfter(new SimpleCORSFilter(), HttpAuthenticationFilter.class);
+                	.authorizeRequests()
+		                .antMatchers("/css/**", "/server/**", "/scripts/**", "/webjars/**", "/templates/**").permitAll()
+		                .antMatchers("/*/swagger.json", "/*/swagger.yaml", "/dh/rest/swagger.json").permitAll()
+		                .antMatchers(FORM_BASED_LOGIN_ENTRY_POINT, TOKEN_REFRESH_ENTRY_POINT).permitAll()
+		        .and()
+                	.authorizeRequests()
+                		.antMatchers(TOKEN_BASED_AUTH_ENTRY_POINT).authenticated()
+        		.and()
+	        		.addFilterBefore(buildBasicAuthenticationFilter(), UsernamePasswordAuthenticationFilter.class)
+	                .addFilterBefore(buildJwtTokenAuthenticationFilter(), UsernamePasswordAuthenticationFilter.class)
+	                .addFilterAfter(new SimpleCORSFilter(), UsernamePasswordAuthenticationFilter.class);
     }
 
     @Override
@@ -80,6 +103,24 @@ public class WebSecurityConfig extends WebSecurityConfigurerAdapter {
                 .authenticationProvider(basicAuthenticationProvider())
                 .authenticationProvider(jwtTokenAuthenticationProvider())
                 .authenticationProvider(anonymousAuthenticationProvider());
+    }
+    
+    protected BasicAuthenticationFilter buildBasicAuthenticationFilter() throws Exception {
+    	BasicAuthenticationFilter filter = new BasicAuthenticationFilter(FORM_BASED_LOGIN_ENTRY_POINT, objectMapper);
+        filter.setAuthenticationManager(authenticationManager());
+        return filter;
+    }
+    
+    protected JwtTokenAuthenticationProcessingFilter buildJwtTokenAuthenticationFilter() throws Exception {
+        List<String> pathsToSkip = Arrays.asList(TOKEN_REFRESH_ENTRY_POINT, FORM_BASED_LOGIN_ENTRY_POINT);
+        SkipPathRequestMatcher matcher = new SkipPathRequestMatcher(pathsToSkip, TOKEN_BASED_AUTH_ENTRY_POINT);
+        return new JwtTokenAuthenticationProcessingFilter(authenticationManager(), tokenExtractor, matcher);
+    }
+    
+    @Bean
+    @Primary
+    public ObjectMapper objectMapper() {
+        return new ObjectMapper();
     }
 
     @Bean
